@@ -1,162 +1,141 @@
-# Plex → Last.fm Scrobbler Setup
+# Tautulli Scrobbler for Plex
 
-Simple setup guide for `scrobble_plex.py` with Tautulli in Docker. Follow the steps in order.
+Scrobbles Plex music playback to Last.fm using Tautulli's script notification agent. Tracks scrobble once they pass 50% progress. Now Playing status updates on start/resume and clears on pause.
 
----
+Written for Tautulli running in Docker, but any setup works as long as the script can find its secrets and `pylast` is installed.
 
-## Step 1 — Get a Last.fm API key
+## What you need
 
-1. Go to **https://www.last.fm/api/account/create** (log in with your Last.fm account)
-2. Application name: anything, e.g. `Plex Scrobbler`. Leave the other fields blank.
-3. Submit. Copy the **API Key** and **Shared Secret** somewhere — you need them in Step 3.
+- Tautulli (Docker) already watching your Plex server
+- A Last.fm account
+- A Last.fm API key — create one at https://www.last.fm/api/account/create (name it whatever, leave the optional fields blank, save the API key and shared secret)
 
----
+## 1. Credentials
 
-## Step 2 — Create the folders
+The script reads four files from `/run/secrets/` inside the container:
 
-On the Docker host, run:
-
-```bash
-mkdir -p /mnt/NVME/apps/tautulli/scripts
-mkdir -p /mnt/NVME/apps/tautulli/secrets
+```
+lastfm_username
+lastfm_api_key
+lastfm_api_secret
+lastfm_password
 ```
 
----
-
-## Step 3 — Create the secret files
-
-Create four text files, **one value per file, nothing else**:
+Each file contains just the value, nothing else. Make a folder on your host, create the files, then mount that folder to `/run/secrets` in your compose file:
 
 ```bash
-echo -n "YourLastfmUsername"  > /mnt/NVME/apps/tautulli/secrets/lastfm_username.txt
-echo -n "YourApiKeyHere"      > /mnt/NVME/apps/tautulli/secrets/lastfm_api_key.txt
-echo -n "YourApiSecretHere"   > /mnt/NVME/apps/tautulli/secrets/lastfm_api_secret.txt
-echo -n "YourLastfmPassword"  > /mnt/NVME/apps/tautulli/secrets/lastfm_password.txt
+mkdir -p /path/to/tautulli/secrets
+echo -n "YourUsername"   > /path/to/tautulli/secrets/lastfm_username
+echo -n "YourApiKey"     > /path/to/tautulli/secrets/lastfm_api_key
+echo -n "YourApiSecret"  > /path/to/tautulli/secrets/lastfm_api_secret
+echo -n "YourPassword"   > /path/to/tautulli/secrets/lastfm_password
+chmod 600 /path/to/tautulli/secrets/*
 ```
 
-Then lock them down:
+```yaml
+    volumes:
+      - /path/to/tautulli/secrets:/run/secrets:ro
+```
+
+If your password has special characters like `$` or `!`, wrap it in single quotes so the shell doesn't mangle it.
+
+(If you're on Docker Swarm you can use real Docker secrets instead — they land in the same place.)
+
+## 2. Install pylast in the container
+
+The script needs the `pylast` library. Quick way:
 
 ```bash
-chmod 600 /mnt/NVME/apps/tautulli/secrets/*.txt
-chown -R 568:568 /mnt/NVME/apps/tautulli/secrets
+docker exec tautulli pip install pylast
 ```
 
-> If your password contains special characters like `$` or `!`, use single quotes:
-> `echo -n 'p@$$word!' > .../lastfm_password.txt`
+This won't survive the container being recreated, though. If you use the linuxserver.io Tautulli image, add this to your compose file so it installs on every startup:
 
----
+```yaml
+    environment:
+      - DOCKER_MODS=linuxserver/mods:universal-package-install
+      - INSTALL_PIP_PACKAGES=pylast
+```
 
-## Step 4 — Add the script
+Any other approach that gets pylast into the container permanently is fine too.
 
-Copy `scrobble_plex.py` into the scripts folder:
+## 3. Add the script
+
+Drop `scrobble_plex.py` somewhere Tautulli can see it — a `scripts` folder inside your Tautulli config mount is the usual spot:
 
 ```bash
-cp scrobble_plex.py /mnt/NVME/apps/tautulli/scripts/
-chown 568:568 /mnt/NVME/apps/tautulli/scripts/scrobble_plex.py
+cp scrobble_plex.py /path/to/tautulli/config/scripts/
 ```
 
----
-
-## Step 5 — Start Tautulli
-
-From the folder containing `compose.yml`:
-
-```bash
-docker compose up -d tautulli
-```
-
-The compose file already handles everything else — it installs `pylast` automatically on startup and mounts the scripts and secrets into the container. First start may take a minute while pip installs.
-
----
-
-## Step 6 — Quick test
-
-Run this from the host:
+## 4. Test it
 
 ```bash
 docker exec -it tautulli python3 /config/scripts/scrobble_plex.py "start" "Test Artist" "Test Album" "Test Track" 240 0
 ```
 
-✅ **Success:** you see `LAST.FM: Updated now playing: Test Artist - Test Track`, and "Test Artist" shows as *Now Playing* on your Last.fm profile.
+You should see `LAST.FM: Updated now playing: Test Artist - Test Track`, and it'll show as Now Playing on your Last.fm profile for a few minutes.
 
-❌ **If it errors:**
-- `FileNotFoundError: /run/secrets/...` → a secret file is missing or misnamed (Step 3)
-- `ModuleNotFoundError: pylast` → container is still installing, wait a minute and check `docker logs tautulli`
-- `Invalid API key` / auth error → a value in one of the secret files is wrong
+Common errors:
 
----
+- `FileNotFoundError: /run/secrets/...` — secrets aren't mounted, or a file is misnamed
+- `ModuleNotFoundError: pylast` — pylast isn't installed (step 2)
+- Auth / invalid API key errors — one of the secret values is wrong
 
-## Step 7 — Set up the Tautulli notification agent
+## 5. Set up the notification agent
 
-Open Tautulli at `http://<your-server>:8181`, then:
+In Tautulli: **Settings → Notification Agents → Add a new notification agent → Script**
 
-**Settings → Notification Agents → Add a new notification agent → Script**
+**Configuration:**
 
-### Configuration tab
 | Setting | Value |
 |---|---|
 | Script Folder | `/config/scripts` |
 | Script File | `./scrobble_plex.py` |
 | Script Timeout | `30` |
-| Description | `Scrobble Plex` |
+| Description | `Scrobble to Last.fm` |
 
-Click **Save**, then reopen the agent for the next tabs.
+Save, then reopen the agent to edit the rest.
 
-### Triggers tab
-Check exactly these four (nothing else):
-- ☑ Playback Start
-- ☑ Playback Stop
-- ☑ Playback Pause
-- ☑ Playback Resume
+**Triggers** — check these four only:
 
-### Conditions tab
-Add one condition so it only fires on music:
+- Playback Start
+- Playback Stop
+- Playback Pause
+- Playback Resume
+
+**Conditions** — add one so it only fires on music:
 
 | Parameter | Operator | Value |
 |---|---|---|
 | Media Type | is | `track` |
 
-### Arguments tab
-Expand each trigger and paste the matching line **exactly, including the quotes**:
+**Arguments** — expand each trigger and paste the matching line exactly, quotes included:
 
-**Playback Start**
+Playback Start:
 ```
 "start" "{track_artist}" "{album_name}" "{track_name}" {duration_sec} 0
 ```
 
-**Playback Stop**
+Playback Stop:
 ```
 "stop" "{track_artist}" "{album_name}" "{track_name}" {duration_sec} {progress_percent}
 ```
 
-**Playback Pause**
+Playback Pause:
 ```
 "pause" "{track_artist}" "{album_name}" "{track_name}" {duration_sec} 0
 ```
 
-**Playback Resume**
+Playback Resume:
 ```
 "resume" "{track_artist}" "{album_name}" "{track_name}" {duration_sec} 0
 ```
 
-Click **Save**. Done.
+Save. Play a song in Plex, let it get past 50%, stop it, and check your Last.fm profile. Tautulli's Notification Logs (gear icon → View Logs) show every time the script fires if you need to debug.
 
----
+## Behavior notes
 
-## Step 8 — Verify with real playback
-
-Play a song in Plex, let it get past **50%**, then stop it. Check:
-
-- Your Last.fm profile shows the scrobble
-- Tautulli → gear icon → **View Logs → Notification Logs** shows the script ran
-
-That's it. From now on, anything played past 50% scrobbles automatically.
-
----
-
-## Good to know
-
-- **Tracks only scrobble past 50% progress** — skipping a song early won't scrobble it (on purpose).
-- **Featured artists are stripped** — "Artist feat. Someone" scrobbles as just "Artist" (on purpose, matches Last.fm's artist pages).
-- **Pausing clears your Now Playing** on Last.fm; resuming brings it back.
-- If you change a secret file, restart the container: `docker compose restart tautulli`
+- Nothing scrobbles below 50% progress — skipped tracks stay off your profile
+- Featured artists get stripped, so "Artist feat. Someone" scrobbles as "Artist" (matches Last.fm's artist pages)
+- Pausing clears Now Playing; resuming brings it back
+- If you change a secret, restart the container
