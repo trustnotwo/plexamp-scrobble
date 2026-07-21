@@ -113,8 +113,9 @@ elif action == "pause":
     print("LAST.FM: Cleared now playing (paused)")
 
 elif action == "stop":
-    if progress >= 50:
-        timestamp = int(time.time()) - int(duration * progress / 100)
+    elapsed = duration * progress / 100
+    if progress >= 50 or elapsed >= 300:
+        timestamp = int(time.time()) - int(elapsed)
         network.scrobble(artist=artist, album=album, title=title, timestamp=timestamp)
         print("LAST.FM: Scrobbled {0} - {1} at {2}% progress".format(artist, title, progress))
     else:
